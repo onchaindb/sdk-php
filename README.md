@@ -455,6 +455,134 @@ try {
 }
 ```
 
+## Cost Estimation
+
+```php
+$quote = $client->getPricingQuote(
+    collection: 'tweets',
+    operationType: 'write',
+    sizeKb: 50,
+    monthlyVolumeKb: 10000  // Optional: for volume discounts
+);
+
+echo "Total cost: " . $quote['total_cost'] . " TIA\n";
+echo "In utia: " . $quote['total_cost_utia'] . "\n";
+```
+
+## Collection Schema Management
+
+Define and manage collection indexes using a schema-first approach:
+
+### Create Collection
+
+```php
+$schema = [
+    'name' => 'users',
+    'fields' => [
+        'email' => ['type' => 'string', 'index' => true],
+        'age' => ['type' => 'number', 'index' => true],
+        'status' => ['type' => 'string', 'index' => true, 'indexType' => 'hash'],
+        'bio' => ['type' => 'string', 'index' => true, 'indexType' => 'fulltext'],
+        'address.city' => ['type' => 'string', 'index' => true], // Nested field
+    ],
+    'useBaseFields' => true, // Auto-index id, createdAt, updatedAt, deletedAt
+];
+
+$result = $client->createCollection($schema);
+// ['collection' => 'users', 'indexes' => [...], 'success' => true, 'warnings' => []]
+```
+
+### Sync Collection
+
+Update indexes to match schema (creates new, removes old):
+
+```php
+$updatedSchema = [
+    'name' => 'users',
+    'fields' => [
+        'email' => ['type' => 'string', 'index' => true],
+        'username' => ['type' => 'string', 'index' => true], // New index
+        // 'age' index removed
+    ],
+];
+
+$result = $client->syncCollection($updatedSchema);
+// ['collection' => 'users', 'created' => [...], 'removed' => [...], 'unchanged' => [...], 'success' => true]
+```
+
+### Field Types & Index Types
+
+| Field Type | Index Types |
+|------------|-------------|
+| `string` | `string` (default), `hash`, `fulltext` |
+| `number` | `number` (default) |
+| `boolean` | `boolean` (default) |
+| `date` | `date` (default) |
+| `object` | `string` |
+| `array` | `string` |
+
+### Read Pricing on Fields
+
+```php
+$schema = [
+    'name' => 'premium_content',
+    'fields' => [
+        'title' => ['type' => 'string', 'index' => true],
+        'content' => [
+            'type' => 'string',
+            'index' => true,
+            'readPricing' => [
+                'pricePerAccess' => 0.001, // 0.001 TIA per read
+            ],
+        ],
+    ],
+];
+```
+
+## Materialized Views
+
+Create pre-computed views for complex queries:
+
+### Create View
+
+```php
+$view = $client->createView(
+    'active_users_summary',
+    ['users', 'orders'], // Source collections
+    [
+        'filter' => ['status' => 'active'],
+        'groupBy' => 'region',
+        'aggregate' => ['totalOrders' => ['$count' => 'orders']],
+    ]
+);
+```
+
+### List Views
+
+```php
+$views = $client->listViews();
+// [['name' => 'active_users_summary', 'source_collections' => [...], 'created_at' => '...']]
+```
+
+### Get View Details
+
+```php
+$view = $client->getView('active_users_summary');
+// ['name' => '...', 'source_collections' => [...], 'query' => [...], 'created_at' => '...']
+```
+
+### Refresh View
+
+```php
+$client->refreshView('active_users_summary');
+```
+
+### Delete View
+
+```php
+$client->deleteView('active_users_summary');
+```
+
 ## API Reference
 
 ### OnChainDBClient
@@ -482,6 +610,14 @@ new OnChainDBClient(
 | `store(collection, data, paymentProof, waitForConfirmation, pollIntervalMs, maxWaitTimeMs)` | Store documents (waits for blockchain confirmation by default) |
 | `getTaskStatus(ticketId)` | Get task status by ticket ID |
 | `waitForTaskCompletion(ticketId, pollIntervalMs, maxWaitTimeMs)` | Poll until task completes |
+| `getPricingQuote(collection, operationType, sizeKb, monthlyVolumeKb)` | Get pricing quote |
+| `createCollection(schema)` | Create collection with indexes |
+| `syncCollection(schema)` | Sync indexes to match schema |
+| `createView(name, sourceCollections, query)` | Create materialized view |
+| `listViews()` | List all views |
+| `getView(name)` | Get view details |
+| `deleteView(name)` | Delete a view |
+| `refreshView(name)` | Refresh view data |
 | `getEndpoint()` | Get the configured endpoint URL |
 | `getAppId()` | Get the configured app ID |
 | `getAppKey()` | Get the configured app key |
