@@ -356,7 +356,7 @@ class OnChainDBClient
      * Base fields that are automatically indexed when useBaseFields is true
      */
     private const BASE_FIELDS = [
-        'id' => ['type' => 'string', 'index' => true],
+        'id' => ['type' => 'string', 'index' => true, 'unique' => true],
         'createdAt' => ['type' => 'date', 'index' => true],
         'updatedAt' => ['type' => 'date', 'index' => true],
         'deletedAt' => ['type' => 'date', 'index' => true],
@@ -524,6 +524,11 @@ class OnChainDBClient
                     'store_values' => true,
                 ];
 
+                // Add unique constraint if specified
+                if (!empty($fieldDef['unique'])) {
+                    $indexRequest['unique_constraint'] = true;
+                }
+
                 if (!empty($fieldDef['readPricing'])) {
                     $pricingModel = !empty($fieldDef['readPricing']['pricePerKb']) ? 'per_kb' : 'per_access';
                     $indexRequest['read_price_config'] = [
@@ -590,7 +595,7 @@ class OnChainDBClient
             'query' => $query,
         ];
 
-        $url = "{$this->endpoint}/api/apps/{$this->appId}/views";
+        $url = "{$this->endpoint}/apps/{$this->appId}/views";
         return $this->httpClient->post($url, $payload);
     }
 
@@ -601,7 +606,7 @@ class OnChainDBClient
      */
     public function listViews(): array
     {
-        $url = "{$this->endpoint}/api/apps/{$this->appId}/views";
+        $url = "{$this->endpoint}/apps/{$this->appId}/views";
         $response = $this->httpClient->get($url);
         return $response['views'] ?? $response;
     }
@@ -614,7 +619,7 @@ class OnChainDBClient
      */
     public function getView(string $name): array
     {
-        $url = "{$this->endpoint}/api/apps/{$this->appId}/views/{$name}";
+        $url = "{$this->endpoint}/apps/{$this->appId}/views/{$name}";
         return $this->httpClient->get($url);
     }
 
@@ -626,7 +631,7 @@ class OnChainDBClient
      */
     public function deleteView(string $name): array
     {
-        $url = "{$this->endpoint}/api/apps/{$this->appId}/views/{$name}";
+        $url = "{$this->endpoint}/apps/{$this->appId}/views/{$name}";
         return $this->httpClient->delete($url);
     }
 
@@ -638,7 +643,7 @@ class OnChainDBClient
      */
     public function refreshView(string $name): array
     {
-        $url = "{$this->endpoint}/api/apps/{$this->appId}/views/{$name}/refresh";
+        $url = "{$this->endpoint}/apps/{$this->appId}/views/{$name}/refresh";
         return $this->httpClient->post($url, []);
     }
 }
