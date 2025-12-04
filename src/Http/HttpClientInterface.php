@@ -27,4 +27,13 @@ interface HttpClientInterface
      * @return array<string, mixed> The response data
      */
     public function get(string $url, array $headers = []): array;
+
+    /**
+     * Make a DELETE request
+     *
+     * @param string $url The URL to delete
+     * @param array<string, string> $headers Additional headers
+     * @return array<string, mixed> The response data
+     */
+    public function delete(string $url, array $headers = []): array;
 }

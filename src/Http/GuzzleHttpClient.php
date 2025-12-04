@@ -88,4 +88,31 @@ class GuzzleHttpClient implements HttpClientInterface
             );
         }
     }
+
+    /**
+     * @inheritDoc
+     */
+    public function delete(string $url, array $headers = []): array
+    {
+        try {
+            $response = $this->client->delete($url, [
+                'headers' => array_merge($this->defaultHeaders, $headers),
+            ]);
+
+            $body = $response->getBody()->getContents();
+            $decoded = json_decode($body, true);
+
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                throw new OnChainDBException('Invalid JSON response from server');
+            }
+
+            return $decoded;
+        } catch (GuzzleException $e) {
+            throw new OnChainDBException(
+                'HTTP request failed: ' . $e->getMessage(),
+                $e->getCode(),
+                $e
+            );
+        }
+    }
 }

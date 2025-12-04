@@ -10,6 +10,19 @@ use OnChainDB\Query\QueryBuilder;
 
 /**
  * Main client for interacting with OnChainDB
+ *
+ * @see Types for PHPStan/Psalm type definitions
+ *
+ * @phpstan-import-type SimpleCollectionSchema from Types
+ * @phpstan-import-type CreateCollectionResult from Types
+ * @phpstan-import-type SyncCollectionResult from Types
+ * @phpstan-import-type MaterializedView from Types
+ * @phpstan-import-type ViewInfo from Types
+ * @phpstan-import-type PricingQuoteResponse from Types
+ * @phpstan-import-type PaymentProof from Types
+ * @phpstan-import-type StoreResult from Types
+ * @phpstan-import-type TaskInfo from Types
+ * @phpstan-import-type QueryResult from Types
  */
 class OnChainDBClient
 {
@@ -132,10 +145,11 @@ class OnChainDBClient
      *
      * @param string $collection Collection name
      * @param array<int, array<string, mixed>> $data Documents to store
-     * @param array<string, mixed> $paymentProof Payment proof for the transaction
+     * @param PaymentProof $paymentProof Payment proof for the transaction
      * @param bool $waitForConfirmation Whether to wait for blockchain confirmation (default: true)
      * @param int $pollIntervalMs Polling interval in milliseconds (default: 2000)
      * @param int $maxWaitTimeMs Maximum wait time in milliseconds (default: 600000 = 10 minutes)
+     * @return StoreResult|TaskInfo
      */
     public function store(
         string $collection,
@@ -190,7 +204,7 @@ class OnChainDBClient
      * Get task status by ticket ID
      *
      * @param string $ticketId The ticket ID returned from async operations
-     * @return array<string, mixed> Task info including status, result, etc.
+     * @return TaskInfo
      */
     public function getTaskStatus(string $ticketId): array
     {
@@ -213,7 +227,7 @@ class OnChainDBClient
      * @param string $ticketId The ticket ID to poll
      * @param int $pollIntervalMs Polling interval in milliseconds (default: 2000)
      * @param int $maxWaitTimeMs Maximum wait time in milliseconds (default: 600000 = 10 minutes)
-     * @return array<string, mixed> The completed task info
+     * @return TaskInfo The completed task info
      * @throws \RuntimeException If task fails or times out
      */
     public function waitForTaskCompletion(
@@ -302,5 +316,329 @@ class OnChainDBClient
     public function getUserKey(): ?string
     {
         return $this->userKey;
+    }
+
+    /**
+     * Get pricing quote for an operation
+     *
+     * @param string $collection Collection name
+     * @param string $operationType "write" or "read"
+     * @param int $sizeKb Size in KB for the operation
+     * @param int|null $monthlyVolumeKb Optional monthly volume for volume discounts
+     * @return PricingQuoteResponse
+     */
+    public function getPricingQuote(
+        string $collection,
+        string $operationType = 'write',
+        int $sizeKb = 1,
+        ?int $monthlyVolumeKb = null
+    ): array {
+        $payload = [
+            'app_id' => $this->appId,
+            'operation_type' => $operationType,
+            'size_kb' => $sizeKb,
+            'collection' => $collection,
+        ];
+
+        if ($monthlyVolumeKb !== null) {
+            $payload['monthly_volume_kb'] = $monthlyVolumeKb;
+        }
+
+        $url = "{$this->endpoint}/api/pricing/quote";
+        return $this->httpClient->post($url, $payload);
+    }
+
+    // ========================================================================
+    // Collection Schema Methods
+    // ========================================================================
+
+    /**
+     * Base fields that are automatically indexed when useBaseFields is true
+     */
+    private const BASE_FIELDS = [
+        'id' => ['type' => 'string', 'index' => true],
+        'createdAt' => ['type' => 'date', 'index' => true],
+        'updatedAt' => ['type' => 'date', 'index' => true],
+        'deletedAt' => ['type' => 'date', 'index' => true],
+    ];
+
+    /**
+     * Get default index type for a field type
+     */
+    private function getDefaultIndexType(string $fieldType): string
+    {
+        return match ($fieldType) {
+            'string' => 'string',
+            'number' => 'number',
+            'boolean' => 'boolean',
+            'date' => 'date',
+            default => 'string',
+        };
+    }
+
+    /**
+     * Create a collection with schema-defined indexes
+     *
+     * @param SimpleCollectionSchema $schema Collection schema definition
+     * @return CreateCollectionResult
+     */
+    public function createCollection(array $schema): array
+    {
+        $result = [
+            'collection' => $schema['name'],
+            'indexes' => [],
+            'success' => true,
+            'warnings' => [],
+        ];
+
+        // Merge base fields if enabled (default: true)
+        $allFields = [];
+        $useBaseFields = $schema['useBaseFields'] ?? true;
+
+        if ($useBaseFields) {
+            $allFields = self::BASE_FIELDS;
+        }
+
+        foreach ($schema['fields'] as $fieldName => $fieldDef) {
+            $allFields[$fieldName] = $fieldDef;
+        }
+
+        // Create indexes only for fields marked with index: true
+        foreach ($allFields as $fieldName => $fieldDef) {
+            if (empty($fieldDef['index'])) {
+                continue;
+            }
+
+            $indexType = $fieldDef['indexType'] ?? $this->getDefaultIndexType($fieldDef['type']);
+
+            $indexRequest = [
+                'name' => "{$schema['name']}_{$fieldName}_idx",
+                'collection' => $schema['name'],
+                'field_name' => $fieldName,
+                'index_type' => $indexType,
+                'store_values' => true,
+            ];
+
+            if (!empty($fieldDef['readPricing'])) {
+                $pricingModel = !empty($fieldDef['readPricing']['pricePerKb']) ? 'per_kb' : 'per_access';
+                $indexRequest['read_price_config'] = [
+                    'pricing_model' => $pricingModel,
+                    'price_per_access_tia' => $fieldDef['readPricing']['pricePerAccess'] ?? null,
+                    'price_per_kb_tia' => $fieldDef['readPricing']['pricePerKb'] ?? null,
+                ];
+            }
+
+            try {
+                $url = "{$this->endpoint}/api/apps/{$this->appId}/indexes";
+                $response = $this->httpClient->post($url, $indexRequest);
+
+                $status = !empty($response['updated']) ? 'updated' : 'created';
+
+                if (!empty($response['_warning'])) {
+                    $result['warnings'][] = "{$fieldName}: {$response['_warning']}";
+                }
+
+                $result['indexes'][] = [
+                    'field' => $fieldName,
+                    'type' => $indexType,
+                    'status' => $status,
+                ];
+            } catch (\Exception $e) {
+                $result['indexes'][] = [
+                    'field' => $fieldName,
+                    'type' => $indexType,
+                    'status' => 'failed',
+                    'error' => $e->getMessage(),
+                ];
+                $result['success'] = false;
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Sync collection schema - applies diff on indexes
+     *
+     * @param SimpleCollectionSchema $schema Updated collection schema definition
+     * @return SyncCollectionResult
+     */
+    public function syncCollection(array $schema): array
+    {
+        $result = [
+            'collection' => $schema['name'],
+            'created' => [],
+            'removed' => [],
+            'unchanged' => [],
+            'success' => true,
+            'errors' => [],
+        ];
+
+        // Get existing indexes for this collection
+        $existingIndexes = [];
+        try {
+            $url = "{$this->endpoint}/api/apps/{$this->appId}/collections/{$schema['name']}/indexes";
+            $response = $this->httpClient->get($url);
+            $indexes = $response['indexes'] ?? $response ?? [];
+
+            foreach ($indexes as $idx) {
+                $existingIndexes[$idx['field_name']] = [
+                    'type' => $idx['index_type'],
+                    'name' => $idx['name'],
+                ];
+            }
+        } catch (\Exception $e) {
+            // Collection might not exist yet, that's okay
+        }
+
+        // Merge base fields if enabled (default: true)
+        $allFields = [];
+        $useBaseFields = $schema['useBaseFields'] ?? true;
+
+        if ($useBaseFields) {
+            $allFields = self::BASE_FIELDS;
+        }
+
+        foreach ($schema['fields'] as $fieldName => $fieldDef) {
+            $allFields[$fieldName] = $fieldDef;
+        }
+
+        // Build set of desired indexed fields
+        $desiredIndexedFields = [];
+        foreach ($allFields as $fieldName => $fieldDef) {
+            if (!empty($fieldDef['index'])) {
+                $desiredIndexedFields[$fieldName] = $fieldDef;
+            }
+        }
+
+        // Find indexes to create (in desired but not existing)
+        foreach ($desiredIndexedFields as $fieldName => $fieldDef) {
+            if (!isset($existingIndexes[$fieldName])) {
+                $indexType = $fieldDef['indexType'] ?? $this->getDefaultIndexType($fieldDef['type']);
+
+                $indexRequest = [
+                    'name' => "{$schema['name']}_{$fieldName}_idx",
+                    'collection' => $schema['name'],
+                    'field_name' => $fieldName,
+                    'index_type' => $indexType,
+                    'store_values' => true,
+                ];
+
+                if (!empty($fieldDef['readPricing'])) {
+                    $pricingModel = !empty($fieldDef['readPricing']['pricePerKb']) ? 'per_kb' : 'per_access';
+                    $indexRequest['read_price_config'] = [
+                        'pricing_model' => $pricingModel,
+                        'price_per_access_tia' => $fieldDef['readPricing']['pricePerAccess'] ?? null,
+                        'price_per_kb_tia' => $fieldDef['readPricing']['pricePerKb'] ?? null,
+                    ];
+                }
+
+                try {
+                    $url = "{$this->endpoint}/api/apps/{$this->appId}/indexes";
+                    $this->httpClient->post($url, $indexRequest);
+                    $result['created'][] = ['field' => $fieldName, 'type' => $indexType];
+                } catch (\Exception $e) {
+                    $result['errors'][] = "Failed to create index on {$fieldName}: {$e->getMessage()}";
+                    $result['success'] = false;
+                }
+            }
+        }
+
+        // Find indexes to remove (existing but not in desired)
+        foreach ($existingIndexes as $fieldName => $existing) {
+            if (!isset($desiredIndexedFields[$fieldName])) {
+                try {
+                    // Index ID format: {collection}_{field_name}_index
+                    $indexId = "{$schema['name']}_{$fieldName}_index";
+                    $url = "{$this->endpoint}/api/apps/{$this->appId}/indexes/{$indexId}";
+                    $this->httpClient->delete($url);
+                    $result['removed'][] = ['field' => $fieldName, 'type' => $existing['type']];
+                } catch (\Exception $e) {
+                    $result['errors'][] = "Failed to remove index on {$fieldName}: {$e->getMessage()}";
+                    $result['success'] = false;
+                }
+            }
+        }
+
+        // Track unchanged indexes
+        foreach ($existingIndexes as $fieldName => $existing) {
+            if (isset($desiredIndexedFields[$fieldName])) {
+                $result['unchanged'][] = ['field' => $fieldName, 'type' => $existing['type']];
+            }
+        }
+
+        return $result;
+    }
+
+    // ========================================================================
+    // Materialized Views Methods
+    // ========================================================================
+
+    /**
+     * Create a new materialized view
+     *
+     * @param string $name Unique name for the view
+     * @param list<string> $sourceCollections Collections this view depends on
+     * @param array<string, mixed> $query Query definition for the view
+     * @return MaterializedView
+     */
+    public function createView(string $name, array $sourceCollections, array $query): array
+    {
+        $payload = [
+            'name' => $name,
+            'source_collections' => $sourceCollections,
+            'query' => $query,
+        ];
+
+        $url = "{$this->endpoint}/api/apps/{$this->appId}/views";
+        return $this->httpClient->post($url, $payload);
+    }
+
+    /**
+     * List all materialized views for the app
+     *
+     * @return list<ViewInfo>
+     */
+    public function listViews(): array
+    {
+        $url = "{$this->endpoint}/api/apps/{$this->appId}/views";
+        $response = $this->httpClient->get($url);
+        return $response['views'] ?? $response;
+    }
+
+    /**
+     * Get a specific materialized view by name
+     *
+     * @param string $name View name
+     * @return MaterializedView
+     */
+    public function getView(string $name): array
+    {
+        $url = "{$this->endpoint}/api/apps/{$this->appId}/views/{$name}";
+        return $this->httpClient->get($url);
+    }
+
+    /**
+     * Delete a materialized view
+     *
+     * @param string $name View name
+     * @return array{success: bool, message?: string}
+     */
+    public function deleteView(string $name): array
+    {
+        $url = "{$this->endpoint}/api/apps/{$this->appId}/views/{$name}";
+        return $this->httpClient->delete($url);
+    }
+
+    /**
+     * Refresh/rebuild a materialized view
+     *
+     * @param string $name View name
+     * @return array{success: bool, message?: string}
+     */
+    public function refreshView(string $name): array
+    {
+        $url = "{$this->endpoint}/api/apps/{$this->appId}/views/{$name}/refresh";
+        return $this->httpClient->post($url, []);
     }
 }
