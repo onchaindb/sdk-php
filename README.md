@@ -479,13 +479,13 @@ Define and manage collection indexes using a schema-first approach:
 $schema = [
     'name' => 'users',
     'fields' => [
-        'email' => ['type' => 'string', 'index' => true],
+        'email' => ['type' => 'string', 'index' => true, 'unique' => true], // Unique constraint
         'age' => ['type' => 'number', 'index' => true],
         'status' => ['type' => 'string', 'index' => true, 'indexType' => 'hash'],
         'bio' => ['type' => 'string', 'index' => true, 'indexType' => 'fulltext'],
         'address.city' => ['type' => 'string', 'index' => true], // Nested field
     ],
-    'useBaseFields' => true, // Auto-index id, createdAt, updatedAt, deletedAt
+    'useBaseFields' => true, // Auto-index id (unique), createdAt, updatedAt, deletedAt
 ];
 
 $result = $client->createCollection($schema);
@@ -520,6 +520,16 @@ $result = $client->syncCollection($updatedSchema);
 | `date` | `date` (default) |
 | `object` | `string` |
 | `array` | `string` |
+
+### Unique Constraint
+
+Add `'unique' => true` to enable automatic deduplication. Only the latest version of each record (by unique field) will be returned in queries:
+
+```php
+'email' => ['type' => 'string', 'index' => true, 'unique' => true]
+```
+
+> Note: When `useBaseFields: true` (default), the `id` field is automatically indexed with a unique constraint.
 
 ### Read Pricing on Fields
 
